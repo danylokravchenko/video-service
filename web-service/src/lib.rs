@@ -5,30 +5,44 @@ pub mod video_client{
     use tokio::io;
     use tokio::prelude::*;
     use futures::{future, Sink, SinkExt, Stream, StreamExt};
-    use std::{env, error::Error, net::SocketAddr};
+    use std::{error::Error, net::SocketAddr};
     use tokio::net::TcpStream;
     use tokio_util::codec::{FramedRead, FramedWrite};
     use bytes::{Bytes, BytesMut};
 
     /// Client allows to communicate with remote video-service 
     pub struct VideoClient {
+        addr: SocketAddr, 
+    }
+
+    impl VideoClient {
+        /// create new client
+        pub fn new(addr: SocketAddr) -> VideoClient {
+            VideoClient{addr}
+        }
+
+        /// create new conection to remote video service
+        pub async fn conn(&self) -> Result<(VideoConnection), Box<dyn Error>> {
+            let stream = TcpStream::connect(&self.addr).await?;
+            // 2^24 = 16777216
+            Ok(VideoConnection{ stream, buffer: BytesMut::with_capacity(16777216) })
+        }
+    }
+
+    pub struct VideoConnection {
         stream: TcpStream,
         buffer: BytesMut,
     }
 
-    impl VideoClient {
-        /// create new client and connect to remote video service
-        pub async fn new(addr: &SocketAddr) -> Result<(VideoClient), Box<dyn Error>> {
-            let stream = TcpStream::connect(addr).await?;
-            // 2^24 = 16777216
-            Ok(VideoClient{ stream, buffer: BytesMut::with_capacity(16777216) })
+    impl VideoConnection {
+        /// send a filename of video file to remote video service
+        pub async fn send_filename(&mut self, filename: &str) -> Result<(), Box<dyn Error>> {
+            self.stream.write_all(filename.as_bytes()).await?;
+            Ok(())
         }
 
-        /// send a chunk of data to remote bideo service
-        pub async fn send(&mut self, bytes: Bytes) -> Result<(), Box<dyn Error>> {
-            // TODO: try to use buffer and every time someone calls this method
-            // check whenever buffer is almost full and flushes it in stream
-            // else append bytes and return 
+        /// send a chunk of data to remote video service using buffer
+        pub async fn buffered_send(&mut self, bytes: Bytes) -> Result<(), Box<dyn Error>> {
             self.buffer.extend_from_slice(&bytes);
             // 2^23 = 8388608
             if self.buffer.len() >= 8388608 {
