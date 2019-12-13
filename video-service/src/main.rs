@@ -5,6 +5,52 @@ use futures::{SinkExt, StreamExt};
 use std::env;
 use std::io::Write;
 use bytes::BytesMut;
+use async_std::fs::File;
+use async_std::prelude::*;
+
+/// Possible requests our clients can send us
+enum Request {
+    Upload { filename: String },
+    Get { filename: String },
+}
+
+impl Request {
+    fn parse(input: &str) -> Result<Request, String> {
+        let mut parts = input.splitn(2, " ");
+        match parts.next() {
+            Some("UPLOAD") => {
+                let filename = match parts.next() {
+                    Some(key) => key,
+                    None => return Err(format!("UPLOAD must be followed by a filename")),
+                };
+                Ok(Request::Upload {
+                    filename: filename.to_string(),
+                })
+            }
+            Some("GET") => {
+                let filename = match parts.next() {
+                    Some(key) => key,
+                    None => return Err(format!("GET must be followed by a filename")),
+                };
+                Ok(Request::Get {
+                    filename: filename.to_string(),
+                })
+            }
+            Some(cmd) => Err(format!("unknown command: {}", cmd)),
+            None => Err(format!("empty input")),
+        }
+    }
+}
+
+/// Responses to the `Request` commands above
+enum Response {
+    Get {
+        value: String,
+    },
+    Error {
+        msg: String,
+    },
+}
 
 #[tokio::main]
 async fn main() {
@@ -32,45 +78,45 @@ async fn main() {
                     let mut framed = BytesCodec::new().framed(socket);
 
                     // get filename of incomming file
-                    let filename = if let Some(result) = framed.next().await {
-                        match result {
-                            Ok(bytes) => {
-                                bytes
-                            },
-                            Err(e) => {
-                                println!("error on decoding from socket; error = {:?}", e);
-                                BytesMut::new()
-                            },
-                        }
-                    } else {
-                        BytesMut::new()
-                    };
+                    let (filename, mut framed) = get_filename(framed).await;
                     
                     let filename = std::str::from_utf8(&filename).unwrap();
 
                     let filepath = format!("./tmp/{}", filename);
-                    // File::create is blocking operation, use threadpool
-                    let mut f = tokio::spawn(async move {
-                        std::fs::File::create(filepath)
-                    }).await.unwrap().unwrap();
+                    let mut f = File::create(filepath).await.unwrap();
 
                     // We loop while there are messages coming from the Stream `framed`.
                     // The stream will return None once the client disconnects.
                     while let Some(result) = framed.next().await {
                         match result {
                             Ok(bytes) => {
-                                // filesystem operations are blocking, we have to use threadpool
-                                f = tokio::spawn(async move {
-                                    f.write_all(&bytes).map(|_| f)
-                                }).await.unwrap().unwrap();
+                                f = f.write_all(&bytes).await.map(|_| f).unwrap();
                             },
                             Err(e) => println!("error on decoding from socket; error = {:?}", e),
                         }
                     }
-                    // The connection will be closed at this point as `lines.next()` has returned `None`.
+                    // The connection will be closed at this point as `framed.next()` has returned `None`.
                 });
             },
             Err(e) => println!("error accepting socket; error = {:?}", e),
         }
     }
+}
+
+// read filename from stream of bytes
+async fn get_filename(mut framed: Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>) -> (BytesMut, Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>) {
+    let bytes = if let Some(result) = framed.next().await {
+        match result {
+            Ok(bytes) => {
+                bytes
+            },
+            Err(e) => {
+                println!("error on decoding from socket; error = {:?}", e);
+                BytesMut::new()
+            },
+        }
+    } else {
+        BytesMut::new()
+    };
+    (bytes, framed)
 }
