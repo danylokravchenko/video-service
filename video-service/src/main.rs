@@ -1,17 +1,20 @@
 #![warn(rust_2018_idioms)]
-use tokio::net::TcpListener;
-use tokio_util::codec::{Framed, BytesCodec, Decoder};
-use futures::{SinkExt, StreamExt};
-use std::env;
-use std::io::Write;
-use bytes::BytesMut;
-use async_std::fs::File;
-use async_std::prelude::*;
+use {
+    std::env,
+    tokio::net::TcpListener,
+    tokio_util::codec::{Framed, BytesCodec, Decoder},
+    futures::{SinkExt, StreamExt},
+    futures_util::stream::SplitStream,
+    bytes::{BytesMut, Bytes},
+    async_std::fs::File,
+    async_std::prelude::*,
+};
 
 /// Possible requests our clients can send us
 enum Request {
     Upload { filename: String },
     Get { filename: String },
+    None,
 }
 
 impl Request {
@@ -75,26 +78,10 @@ async fn main() {
                 // here to move ownership into the async closure.
                 tokio::spawn(async move {
                     // We're parsing each socket with the `BytesCodec`
-                    let mut framed = BytesCodec::new().framed(socket);
+                    let framed = BytesCodec::new().framed(socket);
 
-                    // get filename of incomming file
-                    let (filename, mut framed) = get_filename(framed).await;
-                    
-                    let filename = std::str::from_utf8(&filename).unwrap();
+                    handle_request(framed).await;
 
-                    let filepath = format!("./tmp/{}", filename);
-                    let mut f = File::create(filepath).await.unwrap();
-
-                    // We loop while there are messages coming from the Stream `framed`.
-                    // The stream will return None once the client disconnects.
-                    while let Some(result) = framed.next().await {
-                        match result {
-                            Ok(bytes) => {
-                                f = f.write_all(&bytes).await.map(|_| f).unwrap();
-                            },
-                            Err(e) => println!("error on decoding from socket; error = {:?}", e),
-                        }
-                    }
                     // The connection will be closed at this point as `framed.next()` has returned `None`.
                 });
             },
@@ -103,8 +90,36 @@ async fn main() {
     }
 }
 
+// handle incomming request
+async fn handle_request(framed: Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>) {
+    let (request_details, framed) = get_request_details(framed).await;
+    let request_line = std::str::from_utf8(&request_details).unwrap();
+
+    // split framed stream into read/write streams
+    let (mut ws, rs) = framed.split();
+
+    let mut request = Request::None;
+
+    match Request::parse(&request_line) {
+        Ok(req) => { request = req; },
+        Err(e) => { 
+            println!("error parsing request; error = {:?}", e);
+            // send error back to the client
+            ws.send(Bytes::from(e)).await.unwrap();
+        },
+    };
+
+    match request {
+        Request::Upload {filename} => {
+            upload_file(&filename, rs).await;
+        },
+        Request::Get {filename: _} => {unimplemented!()},
+        Request::None => {unimplemented!()}
+    }
+}
+
 // read filename from stream of bytes
-async fn get_filename(mut framed: Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>) -> (BytesMut, Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>) {
+async fn get_request_details(mut framed: Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>) -> (BytesMut, Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>) {
     let bytes = if let Some(result) = framed.next().await {
         match result {
             Ok(bytes) => {
@@ -119,4 +134,20 @@ async fn get_filename(mut framed: Framed<tokio::net::TcpStream, tokio_util::code
         BytesMut::new()
     };
     (bytes, framed)
+}
+
+async fn upload_file(filename: &str, mut rs: SplitStream<Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>>) {
+    let filepath = format!("./tmp/{}", filename);
+    let mut f = File::create(filepath).await.unwrap();
+
+    // We loop while there are messages coming from the Stream `framed`.
+    // The stream will return None once the client disconnects.
+    while let Some(result) = rs.next().await {
+        match result {
+            Ok(bytes) => {
+                f = f.write_all(&bytes).await.map(|_| f).unwrap();
+            },
+            Err(e) => println!("error on decoding from socket; error = {:?}", e),
+        }
+    }
 }

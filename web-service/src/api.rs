@@ -1,10 +1,9 @@
-use web_service::video_client::VideoClient;
-use actix_multipart::Multipart;
-use actix_web::{web, http, Error, HttpResponse};
-use futures::StreamExt;
-use std::io::Write;
-use std::net::SocketAddr;
-use bytes::Bytes;
+use {
+    web_service::video_client::VideoClient,
+    actix_multipart::Multipart,
+    actix_web::{web, http, Error, HttpResponse},
+    futures::StreamExt,
+};
 
 pub async fn save_file((mut payload, video_client): (Multipart, web::Data<VideoClient>)) -> Result<HttpResponse, Error> {
     // iterate over multipart stream
@@ -15,8 +14,10 @@ pub async fn save_file((mut payload, video_client): (Multipart, web::Data<VideoC
 
         let mut field = item?;
         let content_type = field.content_disposition().unwrap();
+        // TODO: generate unique filename,
+        // don't trust this incomming filename
         let filename = content_type.get_filename().unwrap();
-        video_conn.send_filename(&filename).await.unwrap();
+        video_conn.start_uploading(&filename).await.unwrap();
 
         while let Some(chunk) = field.next().await {
             let data = chunk.unwrap();

@@ -2,13 +2,12 @@
 
 pub mod video_client{
         
-    use tokio::io;
-    use tokio::prelude::*;
-    use futures::{future, Sink, SinkExt, Stream, StreamExt};
-    use std::{error::Error, net::SocketAddr};
-    use tokio::net::TcpStream;
-    use tokio_util::codec::{FramedRead, FramedWrite};
-    use bytes::{Bytes, BytesMut};
+    use {
+        tokio::prelude::*,
+        tokio::net::TcpStream,
+        bytes::{Bytes, BytesMut},
+        std::{error::Error, net::SocketAddr},
+    };
 
     /// Client allows to communicate with remote video-service 
     pub struct VideoClient {
@@ -21,9 +20,11 @@ pub mod video_client{
             VideoClient{addr}
         }
 
-        /// create new conection to remote video service
+        /// create new socket connection to remote video service
         pub async fn conn(&self) -> Result<(VideoConnection), Box<dyn Error>> {
             let stream = TcpStream::connect(&self.addr).await?;
+            // TODO: now it is possible to handle errors
+            // let (mut ws, rs) = stream.split();
             // 2^24 = 16777216
             Ok(VideoConnection{ stream, buffer: BytesMut::with_capacity(16777216) })
         }
@@ -35,9 +36,12 @@ pub mod video_client{
     }
 
     impl VideoConnection {
-        /// send a filename of video file to remote video service
-        pub async fn send_filename(&mut self, filename: &str) -> Result<(), Box<dyn Error>> {
-            self.stream.write_all(filename.as_bytes()).await?;
+        /// start uploading and send a filename of video file to remote video service
+        pub async fn start_uploading(&mut self, filename: &str) -> Result<(), Box<dyn Error>> {
+            let cmd = [b"UPLOAD ", filename.as_bytes()].concat();
+            // let mut cmd = vec![b"UPLOAD "];
+            // cmd.extend_from_slice(filename.as_bytes());
+            self.stream.write_all(&cmd).await?;
             Ok(())
         }
 

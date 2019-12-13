@@ -1,6 +1,9 @@
-use actix_web::{middleware, web, App, HttpServer};
-use std::{env, net::SocketAddr};
-use web_service::video_client::VideoClient;
+use {
+    actix_web::{middleware, web, App, HttpServer},
+    std::{env, net::SocketAddr},
+    web_service::video_client::VideoClient,
+};
+
 mod api;
 
 #[actix_rt::main]
@@ -37,7 +40,7 @@ async fn main() -> std::io::Result<()> {
             // .wrap(error_handlers)
             .service(
                 web::scope("/video")
-                    // dependency injection of video_client
+                    // dependency injection of video client
                     .register_data(video_client.clone())
                     .route("/upload", web::post().to(api::save_file)))
             .service(
