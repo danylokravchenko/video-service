@@ -1,10 +1,11 @@
 #![warn(rust_2018_idioms)]
+
 use {
     std::env,
     tokio::net::TcpListener,
     tokio_util::codec::{Framed, BytesCodec, Decoder},
     futures::{SinkExt, StreamExt},
-    futures_util::stream::SplitStream,
+    futures_util::stream::{SplitStream, SplitSink},
     bytes::{BytesMut, Bytes},
     async_std::fs::File,
     async_std::prelude::*,
@@ -67,8 +68,11 @@ async fn main() {
     let mut listener = TcpListener::bind(&addr).await.unwrap();
     println!("Listening on: {}", addr);
 
-    // create directory where to store videos
+    // create directory where to store temp videos before compressing
     std::fs::create_dir_all("./tmp").unwrap();
+
+    // create directory where to store compressed videos
+    std::fs::create_dir_all("./dist").unwrap();
 
     loop {
         match listener.accept().await {
@@ -113,7 +117,9 @@ async fn handle_request(framed: Framed<tokio::net::TcpStream, tokio_util::codec:
         Request::Upload {filename} => {
             upload_file(&filename, rs).await;
         },
-        Request::Get {filename: _} => {unimplemented!()},
+        Request::Get {filename} => {
+            send_file(&filename, ws).await.unwrap();
+        },
         Request::None => {unimplemented!()}
     }
 }
@@ -149,5 +155,37 @@ async fn upload_file(filename: &str, mut rs: SplitStream<Framed<tokio::net::TcpS
             },
             Err(e) => println!("error on decoding from socket; error = {:?}", e),
         }
+    }
+
+    // for now, I don't want to compress videos, because I don't see any benefits of using it
+    // let source = format!("./tmp/{}", filename);
+    // let destination = format!("./dist/{}", filename);
+
+    // // compressing video is blocking operation, use threadpool
+    // tokio::spawn(async move {
+    //     compress_file_lz4(&source, &destination).unwrap();
+    //     //compress_file_brotli(&source, &destination).unwrap();
+    // }).await.unwrap();
+
+}
+
+async fn send_file(filename: &str, mut ws: SplitSink<Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>, Bytes>) -> async_std::io::Result<()> {
+    let filepath = format!("./tmp/{}", filename);
+    let mut f = File::open(filepath).await.unwrap();
+
+    const LEN: usize = 8388608; // 8 and something Mb
+    let mut buf = vec![0u8; LEN];
+
+    loop {  
+        // Read a buffer from the file.
+        let n = f.read(&mut buf).await?;
+
+        // If this is the end of file, clean up and return.
+        if n == 0 {
+            return Ok(());
+        }
+
+        // Write the buffer into stream.
+        ws.send(Bytes::copy_from_slice(&buf[..n])).await?;
     }
 }
