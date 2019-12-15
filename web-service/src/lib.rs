@@ -52,7 +52,7 @@ pub mod video_client{
         }
 
         /// send a chunk of data to remote video service using buffer
-        pub async fn buffered_send(&mut self, bytes: BytesMut) -> Result<(), Box<dyn Error>> {
+        pub async fn buffered_send(&mut self, bytes: Bytes) -> Result<(), Box<dyn Error>> {
             self.buffer.extend_from_slice(&bytes);
             // 2^23 = 8388608
             if self.buffer.len() >= 8388608 {

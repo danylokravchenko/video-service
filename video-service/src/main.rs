@@ -105,14 +105,7 @@ async fn handle_request(framed: Framed<tokio::net::TcpStream, tokio_util::codec:
 
     match request {
         Request::Upload {filename} => {
-            match upload_file(&filename, rs).await {
-                Err(e) => {
-                    let err = [b"ERROR ", e.as_bytes()].concat();
-                    // send error back to the client
-                    ws.send(Bytes::from(err)).await.unwrap();
-                },
-                Ok(_) =>{},
-            };
+            upload_file(&filename, rs, ws).await.unwrap();
         },
         Request::Get {filename} => {
             send_file(&filename, ws).await.unwrap();
@@ -139,21 +132,30 @@ async fn get_request_details(mut framed: Framed<tokio::net::TcpStream, tokio_uti
     (bytes, framed)
 }
 
-async fn upload_file(filename: &str, mut rs: SplitStream<Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>>) -> Result<(), String> {
+async fn upload_file(filename: &str, 
+    mut rs: SplitStream<Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>>,
+    mut ws: SplitSink<Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>, Bytes>
+) -> async_std::io::Result<()> {
     let filepath = format!("./tmp/{}", filename);
 
     if Path::new(&filepath).exists().await {
-        return Err(format!("file already exists"));
+        let e = format!("file already exists");
+        let err = [b"ERROR ", e.as_bytes()].concat();
+        // send error back to the client
+        ws = send_cmd(err, ws).await;
+        return Ok(());
     }
 
-    let mut f = File::create(filepath).await.unwrap();
+    ws = send_cmd([b"OK", " ".as_bytes()].concat(), ws).await;
+
+    let mut f = File::create(filepath).await?;
 
     // We loop while there are messages coming from the Stream `framed`.
     // The stream will return None once the client disconnects.
     while let Some(result) = rs.next().await {
         match result {
             Ok(bytes) => {
-                f = f.write_all(&bytes).await.map(|_| f).unwrap();
+                f = f.write_all(&bytes).await.map(|_| f)?;
             },
             Err(e) => println!("error on decoding from socket; error = {:?}", e),
         }
@@ -172,15 +174,20 @@ async fn upload_file(filename: &str, mut rs: SplitStream<Framed<tokio::net::TcpS
     Ok(())
 }
 
-async fn send_file(filename: &str, mut ws: SplitSink<Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>, Bytes>) -> async_std::io::Result<()> {
+async fn send_file(filename: &str, 
+    mut ws: SplitSink<Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>, Bytes>
+) -> async_std::io::Result<()> {
     let filepath = format!("./tmp/{}", filename);
 
     if !Path::new(&filepath).exists().await {
         let e = format!("file does not exist");
         let err = [b"ERROR ", e.as_bytes()].concat();
         // send error back to the client
-        ws.send(Bytes::from(err)).await.unwrap();
+        ws = send_cmd(err, ws).await;
+        return Ok(());
     }
+
+    ws = send_cmd([b"OK", " ".as_bytes()].concat(), ws).await;
 
     let mut f = File::open(filepath).await?;
 
@@ -200,4 +207,11 @@ async fn send_file(filename: &str, mut ws: SplitSink<Framed<tokio::net::TcpStrea
         ws.send(Bytes::copy_from_slice(&buf[..n])).await?;
     }
 
+}
+
+async fn send_cmd(cmd: Vec<u8>,
+    mut ws: SplitSink<Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>, Bytes>
+) -> SplitSink<Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>, Bytes>{
+    ws.send(Bytes::from(cmd)).await.unwrap();
+    ws
 }
