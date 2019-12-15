@@ -38,7 +38,6 @@ pub fn index() -> HttpResponse {
             </form>
         </body>
     </html>"#;
-
     HttpResponse::Ok().body(html)
 }
 
