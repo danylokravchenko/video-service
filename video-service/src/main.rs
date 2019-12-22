@@ -195,7 +195,7 @@ async fn send_file(filename: &str, mut ws: WriteStream) -> Result<()> {
 
     let mut f = File::open(filepath).await?;
 
-    const LEN: usize = 8388608; // 8 and something Mb
+    const LEN: usize = 1572864; // 1.5 Mb  // 8388608; // 8 and something Mb
     let mut buf = vec![0u8; LEN];
 
     loop {  
