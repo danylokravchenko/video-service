@@ -3,19 +3,23 @@
 pub mod video_client{
         
     use {
-        tokio::prelude::*,
         tokio::net::{TcpStream},
         tokio_util::{codec::{Framed, BytesCodec, Decoder}},
         futures_util::stream::{SplitStream, SplitSink},
         bytes::{Bytes, BytesMut},
         futures::{SinkExt, StreamExt},
-        std::{error::Error, net::SocketAddr},
+        std::{net::SocketAddr},
     };
 
     /// Client allows to communicate with remote video-service 
     pub struct VideoClient {
         addr: SocketAddr, 
     }
+
+    // custom types to simplify code
+    type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+    type ReadStream = SplitStream<Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>>;
+    type WriteStream = SplitSink<Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>, Bytes>;
 
     impl VideoClient {
         /// create new client
@@ -24,10 +28,9 @@ pub mod video_client{
         }
 
         /// create new socket connection to remote video service
-        pub async fn conn(& self) -> Result<(VideoConnection), Box<dyn Error>> {
+        pub async fn conn(& self) -> Result<VideoConnection> {
             let stream = TcpStream::connect(&self.addr).await?;
             let framed = BytesCodec::new().framed(stream);
-            // TODO: now it is possible to handle errors
             // split framed stream into write/read parts
             let (sink, stream) = framed.split();
             // 2^24 = 16777216
@@ -36,15 +39,14 @@ pub mod video_client{
     }
 
     pub struct VideoConnection {
-        stream: SplitStream<Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>>,
-        sink: SplitSink<Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>, Bytes>,
-        // stream: TcpStream,
+        stream: ReadStream,
+        sink: WriteStream,
         buffer: BytesMut,
     }
 
     impl VideoConnection {
         /// start uploading and send a filename of video file to remote video service
-        pub async fn start_uploading(&mut self, filename: &str) -> Result<(), Box<dyn Error>> {
+        pub async fn start_uploading(&mut self, filename: &str) -> Result<()> {
             let cmd = [b"UPLOAD ", filename.as_bytes()].concat();
             self.sink.send(Bytes::from(cmd)).await?;
             // get response to our sending command
@@ -52,7 +54,7 @@ pub mod video_client{
         }
 
         /// send a chunk of data to remote video service using buffer
-        pub async fn buffered_send(&mut self, bytes: Bytes) -> Result<(), Box<dyn Error>> {
+        pub async fn buffered_send(&mut self, bytes: Bytes) -> Result<()> {
             self.buffer.extend_from_slice(&bytes);
             // 2^23 = 8388608
             if self.buffer.len() >= 8388608 {
@@ -63,14 +65,14 @@ pub mod video_client{
         }
 
         /// flush the rest of bytes in buffer into stream
-        pub async fn flush(&mut self) -> Result<(), Box<dyn Error>> {
+        pub async fn flush(&mut self) -> Result<()> {
             self.sink.send(Bytes::copy_from_slice(&self.buffer)).await?;
             self.buffer.clear();
             Ok(())
         }
 
         /// start recieving a videofile
-        pub async fn start_recieving(&mut self, filename: &str) -> Result<(), Box<dyn Error>> {
+        pub async fn start_recieving(&mut self, filename: &str) -> Result<()> {
             let cmd = [b"GET ", filename.as_bytes()].concat();
             self.sink.send(Bytes::from(cmd)).await?;
             // get response to our sending command
@@ -78,13 +80,15 @@ pub mod video_client{
         }
 
         /// read incomming bytes from the stream
-        pub async fn read_next(&mut self) -> Result<BytesMut, std::io::Error> {        
-            self.stream.next().await.unwrap()
+        pub async fn read_next(&mut self) -> Option<std::result::Result<Bytes, std::io::Error>> {        
+            let bytes = self.stream.next().await.unwrap().unwrap();
+            // convert BytesMut to Bytes to satisfy HTTP Streaming trait
+            Some(Ok(bytes.freeze()))
         }
 
         /// get response to our sended command
         /// possible response is OK and ERROR with message why its happend
-        async fn get_response(&mut self) -> Result<(), Box<dyn Error>> {
+        async fn get_response(&mut self) -> Result<()> {
             let response_details = self.get_response_details().await?;
             let response_line = std::str::from_utf8(&response_details)?;
 
@@ -108,7 +112,7 @@ pub mod video_client{
         }
 
         /// helper to read response bytes from stream
-        async fn get_response_details(&mut self) -> Result<BytesMut, Box<dyn Error>> {
+        async fn get_response_details(&mut self) -> Result<BytesMut> {
             if let Some(result) = self.stream.next().await {
                 match result {
                     Ok(bytes) => {
@@ -134,7 +138,7 @@ pub mod video_client{
     }
 
     impl Response {
-        fn parse(input: &str) -> Result<Response, String> {
+        fn parse(input: &str) -> Result<Response> {
             let mut parts = input.splitn(2, " ");
             match parts.next() {
                 Some("OK") => {
@@ -143,14 +147,14 @@ pub mod video_client{
                 Some("ERROR") => {
                     let msg = match parts.next() {
                         Some(key) => key,
-                        None => return Err(format!("ERROR must be followed by a message")),
+                        None => return Err(format!("ERROR must be followed by a message").into()),
                     };
                     Ok(Response::Error {
                         msg: msg.to_string(),
                     })
                 }
-                Some(cmd) => Err(format!("unknown command: {}", cmd)),
-                None => Err(format!("empty input")),
+                Some(cmd) => Err(format!("unknown command: {}", cmd).into()),
+                None => Err(format!("empty input").into()),
             }
         }
     }

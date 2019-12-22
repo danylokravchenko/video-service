@@ -9,10 +9,13 @@ edition = "2018"
 [dependencies]
 futures = "0.3.1"
 futures-util = "0.3"
-actix-multipart = "0.2.0-alpha.3"
-actix-web = "2.0.0-alpha.3"
-actix-rt = "1.0.0-alpha.3"
+actix-multipart = "0.2.0"
+actix-web = "2.0.0-rc"
+actix-rt = "1.0.0"
+actix = "0.9.0"
 tokio = { version = "0.2.4", features = ["full"] }
 tokio-util = { version = "0.2.0", features = ["full"] }
 bytes = "0.5"
 failure = "0.1.6"
+tera = "1.0"
+env_logger = "0.7.1"

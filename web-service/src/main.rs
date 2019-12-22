@@ -2,13 +2,16 @@ use {
     actix_web::{middleware, web, App, HttpServer},
     std::{env, net::SocketAddr},
     web_service::video_client::VideoClient,
+    tera::Tera,
+    env_logger,
 };
 
 mod api;
 
 #[actix_rt::main]
 async fn main() -> std::io::Result<()> {
-    env::set_var("RUST_LOG", "actix_server=info,actix_web=info");
+    std::env::set_var("RUST_LOG", "actix_web=info");
+    env_logger::init();
     std::fs::create_dir_all("./tmp").unwrap();
 
     let addr = env::args().nth(1).unwrap_or("localhost:8092".to_string());
@@ -34,18 +37,26 @@ async fn main() -> std::io::Result<()> {
     //         .handler(http::StatusCode::NOT_FOUND, api::not_found);
 
     HttpServer::new(move || {
+
+        let tera =
+        Tera::new(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/**/*")).unwrap();
+
+
         App::new()
+            .data(tera)
             .wrap(middleware::Logger::default())
             // TODO: uncomment once implement error handlers
             // .wrap(error_handlers)
             .service(
                 web::scope("/video")
                     // dependency injection of video client
-                    .register_data(video_client.clone())
-                    .route("/upload", web::post().to(api::save_file)))
+                    .app_data(video_client.clone())
+                    .route("/upload", web::post().to(api::save_file))
+                    .route("/", web::get().to(api::show_video))
+                    .route("/{filename}", web::get().to(api::get_file)))
             .service(
                 web::resource("/")
-                    .route(web::get().to(api::index)),
+                    .route(web::get().to(api::index)),   
             )
     })
     .bind(addr)?
