@@ -1,5 +1,4 @@
 #![warn(rust_2018_idioms)]
-
 pub mod video_client{
         
     use {
@@ -80,10 +79,13 @@ pub mod video_client{
         }
 
         /// read incomming bytes from the stream
-        pub async fn read_next(&mut self) -> Option<std::result::Result<Bytes, std::io::Error>> {        
-            let bytes = self.stream.next().await.unwrap().unwrap();
-            // convert BytesMut to Bytes to satisfy HTTP Streaming trait
-            Some(Ok(bytes.freeze()))
+        pub async fn read_next(&mut self) -> Option<std::result::Result<Bytes, std::io::Error>> {
+            if let Some(bytes) = self.stream.next().await {
+                // convert BytesMut to Bytes to satisfy HTTP Streaming trait
+                Some(Ok(bytes.unwrap().freeze()))
+            } else {
+                None
+            }
         }
 
         /// get response to our sended command

@@ -1,6 +1,7 @@
 #![warn(rust_2018_idioms)]
 use {
     std::env,
+    std::process::{Command as OsCommand, Stdio},
     tokio::net::TcpListener,
     tokio_util::codec::{Framed, BytesCodec, Decoder},
     futures::{SinkExt, StreamExt},
@@ -143,9 +144,11 @@ async fn get_request_details(framed: &mut FramedStream) -> Result<BytesMut> {
 
 // create a file from incomming bytes and handle errors
 async fn upload_file(filename: &str, mut rs: ReadStream, mut ws: WriteStream) -> Result<()> {
-    let filepath = format!("./tmp/{}", filename);
+    let filename = filename.to_owned();
+    let filepath = format!("./tmp/{}", &filename);
+    let dist_filepath = format!("./dist/{}", &filename);
 
-    if Path::new(&filepath).exists().await {
+    if Path::new(&dist_filepath).exists().await {
         let e = format!("file already exists");
         // send error back to the client
         send_cmd(&mut ws, Command::Err{msg: e}).await?;
@@ -166,23 +169,39 @@ async fn upload_file(filename: &str, mut rs: ReadStream, mut ws: WriteStream) ->
             Err(e) => println!("error on decoding from socket; error = {:?}", e),
         }
     }
-
-    // for now, I don't want to compress videos, because I don't see any benefits of using it
-    // let source = format!("./tmp/{}", filename);
-    // let destination = format!("./dist/{}", filename);
-
-    // // compressing video is blocking operation, use threadpool
-    // tokio::spawn(async move {
-    //     compress_file_lz4(&source, &destination).unwrap();
-    //     //compress_file_brotli(&source, &destination).unwrap();
-    // }).await.unwrap();
+    
+    // reduce quality of incomming video file
+    tokio::spawn(async move {
+        let source = format!("{}{}", concat!(env!("CARGO_MANIFEST_DIR"), "/tmp/"), filename);
+        let dist = format!("{}{}", concat!(env!("CARGO_MANIFEST_DIR"), "/dist/"), filename);
+        //ffmpeg -i {input file}  -r {fps} -s {resolution} {output file}
+        let mut cmd = OsCommand::new("ffmpeg")
+            .args(&[
+                "-i",
+                &source,
+                "-r",
+                "30",
+                "-s",
+                "960x540",
+                &dist,
+            ])
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("ffmpeg failed to start");
+    
+        cmd.wait().and_then(|_| {
+            // delete temp file
+            std::fs::remove_file(source).unwrap();
+            Ok(())
+        }).unwrap();
+    });
 
     Ok(())
 }
 
 // send file to the client
 async fn send_file(filename: &str, mut ws: WriteStream) -> Result<()> {
-    let filepath = format!("./tmp/{}", filename);
+    let filepath = format!("./dist/{}", filename);
 
     if !Path::new(&filepath).exists().await {
         let e = format!("file does not exist");

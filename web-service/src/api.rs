@@ -65,7 +65,7 @@ pub async fn save_file((mut payload, video_client): (Multipart, web::Data<VideoC
 
 // render videoplayer
 pub async fn show_video(tmpl: web::Data<Tera>) -> Result<HttpResponse, Error> {
-    let filename = "output.mp4";
+    let filename = "test.mp4";
     let mut ctx = tera::Context::new();
     ctx.insert("name", &filename.to_owned());
     let s = tmpl.render("video.html", &ctx)
@@ -75,7 +75,7 @@ pub async fn show_video(tmpl: web::Data<Tera>) -> Result<HttpResponse, Error> {
 
 
 // get video file from video service
-pub async fn get_file((filename, video_client): (web::Path<(String)>, web::Data<VideoClient>)) -> Result<HttpResponse, VideoError> {
+pub async fn get_file((filename, video_client): (web::Path<String>, web::Data<VideoClient>)) -> Result<HttpResponse, VideoError> {
     let mut video_conn = video_client.conn()
             .await
             .expect("Can not connect to remote video-service");
