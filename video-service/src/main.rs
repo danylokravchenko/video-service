@@ -4,7 +4,7 @@ use {
     std::process::{Command as OsCommand, Stdio},
     tokio::net::TcpListener,
     tokio_util::codec::{Framed, BytesCodec, Decoder},
-    futures::{SinkExt, StreamExt},
+    futures::{SinkExt, StreamExt, channel::mpsc, select, FutureExt},
     futures_util::stream::{SplitStream, SplitSink},
     bytes::{BytesMut, Bytes},
     async_std::{fs::File, path::Path},
@@ -16,6 +16,8 @@ type FramedStream = Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 type ReadStream = SplitStream<Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>>;
 type WriteStream = SplitSink<Framed<tokio::net::TcpStream, tokio_util::codec::BytesCodec>, Bytes>;
+type Sender<T> = mpsc::UnboundedSender<T>;
+type Receiver<T> = mpsc::UnboundedReceiver<T>;
 
 /// Possible requests our clients can send us
 enum Request {
@@ -73,9 +75,12 @@ async fn main() -> Result<()> {
 
     // create directory where to store temp videos before compressing
     std::fs::create_dir_all("./tmp")?;
-
     // create directory where to store compressed videos
     std::fs::create_dir_all("./dist")?;
+
+    // create video processing queue
+    let (video_sender, video_receiver) = mpsc::unbounded();
+    tokio::spawn(video_processing_loop(video_receiver));
 
     loop {
         match listener.accept().await {
@@ -83,11 +88,12 @@ async fn main() -> Result<()> {
                 // We'll `spawn` this client to ensure it
                 // runs concurrently with all other clients. The `move` keyword is used
                 // here to move ownership into the async closure.
+                let video_sender = video_sender.clone();
                 tokio::spawn(async move {
                     // We're parsing each socket with the `BytesCodec`
                     let framed = BytesCodec::new().framed(socket);
 
-                    handle_request(framed).await.unwrap();
+                    handle_request(framed, video_sender).await.unwrap();
 
                     // The connection will be closed at this point as `framed.next()` has returned `None`.
                 });
@@ -98,7 +104,7 @@ async fn main() -> Result<()> {
 }
 
 // handle incomming request
-async fn handle_request(mut framed: FramedStream) -> Result<()> {
+async fn handle_request(mut framed: FramedStream, video_sender: Sender<String>) -> Result<()> {
     let request_details = get_request_details(&mut framed).await.unwrap_or(BytesMut::new());
     let request_line = std::str::from_utf8(&request_details)?;
 
@@ -116,7 +122,7 @@ async fn handle_request(mut framed: FramedStream) -> Result<()> {
 
     match request {
         Request::Upload {filename} => {
-            upload_file(&filename, rs, ws).await?;
+            upload_file(&filename, rs, ws, video_sender).await?;
         },
         Request::Get {filename} => {
             send_file(&filename, ws).await?;
@@ -125,7 +131,7 @@ async fn handle_request(mut framed: FramedStream) -> Result<()> {
     }
 
     Ok(())
-} 
+}
 
 // read filename from stream of bytes
 async fn get_request_details(framed: &mut FramedStream) -> Result<BytesMut> {
@@ -143,7 +149,7 @@ async fn get_request_details(framed: &mut FramedStream) -> Result<BytesMut> {
 }
 
 // create a file from incomming bytes and handle errors
-async fn upload_file(filename: &str, mut rs: ReadStream, mut ws: WriteStream) -> Result<()> {
+async fn upload_file(filename: &str, mut rs: ReadStream, mut ws: WriteStream, mut video_sender: Sender<String>) -> Result<()> {
     let filename = filename.to_owned();
     let filepath = format!("./tmp/{}", &filename);
     let dist_filepath = format!("./dist/{}", &filename);
@@ -169,32 +175,9 @@ async fn upload_file(filename: &str, mut rs: ReadStream, mut ws: WriteStream) ->
             Err(e) => println!("error on decoding from socket; error = {:?}", e),
         }
     }
-    
-    // reduce quality of incomming video file
-    tokio::spawn(async move {
-        let source = format!("{}{}", concat!(env!("CARGO_MANIFEST_DIR"), "/tmp/"), filename);
-        let dist = format!("{}{}", concat!(env!("CARGO_MANIFEST_DIR"), "/dist/"), filename);
-        //ffmpeg -i {input file}  -r {fps} -s {resolution} {output file}
-        let mut cmd = OsCommand::new("ffmpeg")
-            .args(&[
-                "-i",
-                &source,
-                "-r",
-                "30",
-                "-s",
-                "960x540",
-                &dist,
-            ])
-            .stdout(Stdio::null())
-            .spawn()
-            .expect("ffmpeg failed to start");
-    
-        cmd.wait().and_then(|_| {
-            // delete temp file
-            std::fs::remove_file(source).unwrap();
-            Ok(())
-        }).unwrap();
-    });
+
+    // push video filename to video processing queue
+    video_sender.send(filename).await?;
 
     Ok(())
 }
@@ -244,4 +227,36 @@ async fn send_cmd(ws: &mut WriteStream, cmd: Command) -> Result<()>{
     };
     ws.send(Bytes::from(cmd)).await?;
     Ok(())
+}
+
+// reduce quality of incomming video file
+async fn video_processing_loop(videos: Receiver<String>) {
+    let mut videos = videos.fuse();
+    loop {
+        let filename = select! {
+            filename = videos.next().fuse() => filename.unwrap()
+        };
+        let source = format!("{}{}", concat!(env!("CARGO_MANIFEST_DIR"), "/tmp/"), filename);
+        let dist = format!("{}{}", concat!(env!("CARGO_MANIFEST_DIR"), "/dist/"), filename);
+        //ffmpeg -i {input file}  -r {fps} -s {resolution} {output file}
+        let mut cmd = OsCommand::new("ffmpeg")
+            .args(&[
+                "-i",
+                &source,
+                "-r",
+                "30",
+                "-s",
+                "960x540",
+                &dist,
+            ])
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("ffmpeg failed to start");
+    
+        cmd.wait().and_then(|_| {
+            // delete temp file
+            std::fs::remove_file(source).unwrap();
+            Ok(())
+        }).unwrap();
+    }
 }
