@@ -163,41 +163,104 @@ pub mod video_client{
 
 }
 
-mod codec {
-    use bytes::{BufMut, BytesMut};
-    use std::io;
-    use tokio_util::codec::{Decoder, Encoder};
+pub mod video_service {
 
-    /// A simple `Codec` implementation that just ships bytes around.
-    ///
-    /// This type is used for "framing" a TCP/UDP stream of bytes but it's really
-    /// just a convenient method for us to work with streams/sinks for now.
-    /// This'll just take any data read and interpret it as a "frame" and
-    /// conversely just shove data into the output location without looking at
-    /// it.
-    pub struct Bytes;
+    use {
+        mysql_async::prelude::*,
+        mysql_async::{Pool},
+        chrono::{Utc, NaiveDateTime},
+        serde::Deserialize,
+    };
 
-    impl Decoder for Bytes {
-        type Item = Vec<u8>;
-        type Error = io::Error;
+    type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-        fn decode(&mut self, buf: &mut BytesMut) -> io::Result<Option<Vec<u8>>> {
-            if !buf.is_empty() {
-                let len = buf.len();
-                Ok(Some(buf.split_to(len).into_iter().collect()))
-            } else {
-                Ok(None)
+    #[macro_export]
+    macro_rules! list_fields {
+        (struct $name:ident { $($fname:ident : $ftype:ty),* }) => {
+            #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Default)]
+            pub struct $name {
+                $(pub $fname : $ftype),*
+            }
+    
+            impl $name {
+                pub fn field_names() -> Vec<&'static str> {
+                    vec![$(stringify!($fname)),*]
+                }
             }
         }
     }
+    
+    // #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Default)]
+    // pub struct Video {
+    //     pub id: i32,
+    //     pub name: String,
+    //     pub createdat: Option<String>,
+    // }
+    list_fields!{
+        struct Video {
+            id: i32,
+            name: String,
+            createdat: Option<String>
+        }
+    }
+    
+    pub struct VideoService {
+        pool: Pool,
+    }
 
-    impl Encoder for Bytes {
-        type Item = Vec<u8>;
-        type Error = io::Error;
+    impl VideoService {
+        pub fn new(pool: Pool) -> VideoService {
+            VideoService{pool}
+        }
 
-        fn encode(&mut self, data: Vec<u8>, buf: &mut BytesMut) -> io::Result<()> {
-            buf.put(&data[..]);
+        /// insert new video
+        pub async fn insert_video(&self, filename: &str) -> Result<()> {
+            let conn = self.pool.get_conn().await?;
+            let now = Utc::now().format("%Y-%m-%d %H:%M:%S");
+            let filename = filename.to_owned();
+            let video = vec![Video{id: 0, name: filename, createdat: Some(now.to_string())}];
+            let params = video.into_iter().map(|video| {
+                params! {
+                    "name" => video.name,
+                    "createdat" => video.createdat.clone(),
+                }
+            });
+
+            conn.batch_exec(r"INSERT INTO videos (name, createdat)
+            VALUES (:name, :createdat)", params).await?;
             Ok(())
+        }
+
+        /// find video by id
+        pub async fn find_video(&self, id: i32) -> Option<Video> {
+            let conn = self.pool.get_conn().await.unwrap();
+            let fields = Video::field_names().join(", ");
+
+            let sql = format!(r"
+                SELECT {} 
+                FROM videos 
+                WHERE id = :id
+            ", fields);      
+            let result = conn.prep_exec(sql, params!{"id" => id}).await.unwrap();
+            
+            if result.affected_rows() == 0 {
+                return None;
+            }
+            // Collect result
+            let (_ /* conn */, video) = result.map_and_drop(|row| {
+                let (id, name, createdat) = mysql_async::from_row::<(i32, Vec<u8>, Option<NaiveDateTime>)>(row);
+                Video {
+                    id: id,
+                    name: String::from_utf8_lossy(&name).into_owned(),
+                    createdat: Some(createdat.unwrap().to_string()),
+                }
+            }).await.unwrap();
+            
+            if video.len() == 0 {
+                None
+            } else {
+                Some(video[0].clone())
+            }
         }
     }
 }

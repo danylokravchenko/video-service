@@ -1,11 +1,20 @@
+extern crate rand;
+extern crate chrono;
+
 use {
     web_service::video_client::VideoClient,
     actix_multipart::Multipart,
-    actix_web::{web, http, error, Error, HttpResponse},
+    actix_web::{web, dev, http, error, Error, HttpResponse, Result},
+    actix_web::middleware::errhandlers::ErrorHandlerResponse,
+    actix_files::NamedFile,
     futures::{StreamExt, channel::mpsc},
     failure::Fail,
     tera::Tera,
     actix,
+    rand::{thread_rng, Rng},
+    rand::distributions::Standard,
+    web_service::video_service::{VideoService},
+    serde::Deserialize,
 };
 
 #[derive(Fail, Debug)]
@@ -13,23 +22,12 @@ use {
 pub enum VideoError {
     #[fail(display = "An internal error occurred. Err: {}. Please try again later", msg)]
     InternalError {msg: String},
-    #[fail(display = "Vido file was not found. Err: {}. Please try again later", msg)]
+    #[fail(display = "Vido file was not found. Err: {}", msg)]
     NotFound {msg: String},
-    // #[fail(display = "bad request")]
-    // BadClientData,
-    // #[fail(display = "timeout")]
-    // Timeout,
 }
 
-impl error::ResponseError for VideoError {
-    // fn error_response(&self) -> HttpResponse {
-    //     match *self {
-    //         VideoError::InternalError {msg} => {
-    //             HttpResponse::new(http::StatusCode::INTERNAL_SERVER_ERROR)
-    //         }
-    //     }
-    // }
-}
+// leave the default implementation
+impl error::ResponseError for VideoError {}
 
 // render upload file form 
 pub async fn index(tmpl: web::Data<Tera>) -> Result<HttpResponse, Error> {
@@ -39,7 +37,7 @@ pub async fn index(tmpl: web::Data<Tera>) -> Result<HttpResponse, Error> {
 }
 
 // upload video file to remote video service
-pub async fn save_file((mut payload, video_client): (Multipart, web::Data<VideoClient>)) -> Result<HttpResponse, VideoError> {
+pub async fn save_file((mut payload, video_client, video_service): (Multipart, web::Data<VideoClient>, web::Data<VideoService>)) -> Result<HttpResponse, Error> {
     // iterate over multipart stream
     while let Some(item) = payload.next().await {
         let mut video_conn = video_client.conn()
@@ -47,10 +45,12 @@ pub async fn save_file((mut payload, video_client): (Multipart, web::Data<VideoC
             .expect("Can not connect to remote video-service");
 
         let mut field = item.unwrap();
-        let content_type = field.content_disposition().unwrap();
-        // TODO: generate unique filename,
-        // don't trust this incomming filename
-        let filename = content_type.get_filename().unwrap();
+        // generate random filename
+        let filename: Vec<u32> = thread_rng()
+            .sample_iter(&Standard)
+            .take(1)
+            .collect();
+        let filename = filename[0].to_string() + ".mp4";
         video_conn.start_uploading(&filename).await
             .map_err(|e| VideoError::InternalError{msg: e.to_string()})?;
 
@@ -59,29 +59,40 @@ pub async fn save_file((mut payload, video_client): (Multipart, web::Data<VideoC
             video_conn.buffered_send(data).await.unwrap();
         }
         video_conn.flush().await.unwrap();
+
+        // insert new video to the database
+        video_service.insert_video(&filename).await.unwrap();
     }
     Ok(redirect_to("/"))
 }
 
+#[derive(Deserialize)]
+pub struct Info {
+    pub id: i32,
+}
 // render videoplayer
-pub async fn show_video(tmpl: web::Data<Tera>) -> Result<HttpResponse, Error> {
-    let filename = "test.mp4";
+pub async fn show_video((tmpl, query, video_service): (web::Data<Tera>, web::Query<Info>, web::Data<VideoService>)) -> Result<HttpResponse, Error> {
+    let video = match video_service.find_video(query.id).await {
+        None => {
+            return Err(error::ErrorNotFound(VideoError::NotFound{msg: format!("Video was not found")}));
+        },
+        Some(video) => video,
+    };
     let mut ctx = tera::Context::new();
-    ctx.insert("name", &filename.to_owned());
+    ctx.insert("name", &video.name);
     let s = tmpl.render("video.html", &ctx)
             .map_err(|_| error::ErrorInternalServerError("Template error"))?;
     Ok(HttpResponse::Ok().content_type("text/html").body(s))
 }
 
-
 // get video file from video service
-pub async fn get_file((filename, video_client): (web::Path<String>, web::Data<VideoClient>)) -> Result<HttpResponse, VideoError> {
+pub async fn get_file((filename, video_client): (web::Path<String>, web::Data<VideoClient>)) -> Result<HttpResponse, Error> {
     let mut video_conn = video_client.conn()
             .await
             .expect("Can not connect to remote video-service");
 
     video_conn.start_recieving(&filename).await
-        .map_err(|e| VideoError::NotFound{msg: e.to_string()}).unwrap();
+        .map_err(|e| error::ErrorNotFound(VideoError::NotFound{msg: e.to_string()}))?;
     
     let (tx, rx_body) = mpsc::unbounded();
 
@@ -100,4 +111,34 @@ fn redirect_to(location: &str) -> HttpResponse {
     HttpResponse::Found()
         .header(http::header::LOCATION, location)
         .finish()
+}
+
+pub fn bad_request<B>(res: dev::ServiceResponse<B>) -> Result<ErrorHandlerResponse<B>> {
+    let new_resp = NamedFile::open("static/errors/400.html")?
+        .set_status_code(res.status())
+        .into_response(res.request())?;
+    Ok(ErrorHandlerResponse::Response(
+        res.into_response(new_resp.into_body()),
+    ))
+}
+
+pub fn not_found<B>(res: dev::ServiceResponse<B>) -> Result<ErrorHandlerResponse<B>> {
+    let new_resp = NamedFile::open("static/errors/404.html")?
+        .set_status_code(res.status())
+        .into_response(res.request())?;
+    Ok(ErrorHandlerResponse::Response(
+        res.into_response(new_resp.into_body())
+        )
+    )
+}
+
+pub fn internal_server_error<B>(
+    res: dev::ServiceResponse<B>,
+) -> Result<ErrorHandlerResponse<B>> {
+    let new_resp = NamedFile::open("static/errors/500.html")?
+        .set_status_code(res.status())
+        .into_response(res.request())?;
+    Ok(ErrorHandlerResponse::Response(
+        res.into_response(new_resp.into_body()),
+    ))
 }
