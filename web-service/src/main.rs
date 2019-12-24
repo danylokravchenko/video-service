@@ -15,7 +15,7 @@ async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "actix_web=info");
     env_logger::init();
 
-    let addr = env::args().nth(1).unwrap_or("localhost:8093".to_string());
+    let addr = env::args().nth(1).unwrap_or("localhost:8090".to_string());
     println!("Server is running on http://{}", addr);
 
     // address of video-service
@@ -59,8 +59,9 @@ async fn main() -> std::io::Result<()> {
                     .app_data(video_client.clone())
                     .app_data(video_service.clone())
                     .route("/upload", web::post().to(api::save_file))
-                    .route("/", web::get().to(api::show_video))
-                    .route("/{filename}", web::get().to(api::get_file)))
+                    .route("/", web::get().to(api::list_videos))
+                    .route("/show", web::get().to(api::show_video))
+                    .route("/file/{filename}", web::get().to(api::get_file)))
             .service(
                 web::resource("/")
                     .route(web::get().to(api::index)),   

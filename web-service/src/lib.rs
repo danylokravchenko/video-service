@@ -169,7 +169,7 @@ pub mod video_service {
         mysql_async::prelude::*,
         mysql_async::{Pool},
         chrono::{Utc, NaiveDateTime},
-        serde::Deserialize,
+        serde::{Deserialize, Serialize},
     };
 
     type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -177,7 +177,7 @@ pub mod video_service {
     #[macro_export]
     macro_rules! list_fields {
         (struct $name:ident { $($fname:ident : $ftype:ty),* }) => {
-            #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Default)]
+            #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize, Default)]
             pub struct $name {
                 $(pub $fname : $ftype),*
             }
@@ -243,9 +243,6 @@ pub mod video_service {
             ", fields);      
             let result = conn.prep_exec(sql, params!{"id" => id}).await.unwrap();
             
-            if result.affected_rows() == 0 {
-                return None;
-            }
             // Collect result
             let (_ /* conn */, video) = result.map_and_drop(|row| {
                 let (id, name, createdat) = mysql_async::from_row::<(i32, Vec<u8>, Option<NaiveDateTime>)>(row);
@@ -255,12 +252,36 @@ pub mod video_service {
                     createdat: Some(createdat.unwrap().to_string()),
                 }
             }).await.unwrap();
-            
+
             if video.len() == 0 {
                 None
             } else {
                 Some(video[0].clone())
             }
+        }
+
+        /// list all videos from the database
+        pub async fn list_videos(&self) -> Vec<Video> {
+            let conn = self.pool.get_conn().await.unwrap();
+            let fields = Video::field_names().join(", ");
+
+            let sql = format!(r"
+                SELECT {} 
+                FROM videos
+            ", fields);      
+            let result = conn.prep_exec(sql, ()).await.unwrap();
+
+            // Collect result
+            let (_ /* conn */, videos) = result.map_and_drop(|row| {
+                let (id, name, createdat) = mysql_async::from_row::<(i32, Vec<u8>, Option<NaiveDateTime>)>(row);
+                Video {
+                    id: id,
+                    name: String::from_utf8_lossy(&name).into_owned(),
+                    createdat: Some(createdat.unwrap().to_string()),
+                }
+            }).await.unwrap();
+
+            videos
         }
     }
 }

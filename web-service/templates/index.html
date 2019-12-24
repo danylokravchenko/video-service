@@ -1,6 +1,7 @@
 <html>
     <head><title>Upload Test</title></head>
     <body>
+        {% include "header.html" %}
         <form action="/video/upload" method="post" enctype="multipart/form-data">
             <input type="file" multiple name="file"/>
             <input type="submit" value="Submit"></button>

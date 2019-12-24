@@ -1,0 +1,11 @@
+<html>
+    <head><title>List</title></head>
+    <body>
+        {% include "header.html" %}
+        {% for video in videos %}
+            <div>
+                {{loop.index}}. <a href="/video/show?id={{video.id}}">{{video.name}}</a>
+            </div>
+        {% endfor %}
+    </body>
+</html>

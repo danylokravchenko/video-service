@@ -50,7 +50,7 @@ pub async fn save_file((mut payload, video_client, video_service): (Multipart, w
             .sample_iter(&Standard)
             .take(1)
             .collect();
-        let filename = filename[0].to_string() + ".mp4";
+        let filename = filename[0].to_string()[0..7].to_string() + ".mp4";
         video_conn.start_uploading(&filename).await
             .map_err(|e| VideoError::InternalError{msg: e.to_string()})?;
 
@@ -104,6 +104,16 @@ pub async fn get_file((filename, video_client): (web::Path<String>, web::Data<Vi
     });
     
     Ok(HttpResponse::Ok().streaming(rx_body))
+}
+
+// list all available videos
+pub async fn list_videos((tmpl, video_service): (web::Data<Tera>, web::Data<VideoService>)) -> Result<HttpResponse, Error> {
+    let videos = video_service.list_videos().await;
+    let mut ctx = tera::Context::new();
+    ctx.insert("videos", &videos);
+    let s = tmpl.render("list.html", &ctx)
+            .map_err(|_| error::ErrorInternalServerError("Template error"))?;
+    Ok(HttpResponse::Ok().content_type("text/html").body(s))
 }
 
 // redirects to specific path
