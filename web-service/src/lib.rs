@@ -48,7 +48,7 @@ pub mod video_client{
         pub async fn start_uploading(&mut self, filename: &str) -> Result<()> {
             let cmd = [b"UPLOAD ", filename.as_bytes()].concat();
             self.sink.send(Bytes::from(cmd)).await?;
-            // get response to our sending command
+            // get response from remote service
             self.get_response().await
         }
 
@@ -70,11 +70,11 @@ pub mod video_client{
             Ok(())
         }
 
-        /// start recieving a videofile
-        pub async fn start_recieving(&mut self, filename: &str) -> Result<()> {
+        /// start receiving a videofile
+        pub async fn start_receiving(&mut self, filename: &str) -> Result<()> {
             let cmd = [b"GET ", filename.as_bytes()].concat();
             self.sink.send(Bytes::from(cmd)).await?;
-            // get response to our sending command
+            // get response from remote service
             self.get_response().await
         }
 
@@ -171,9 +171,10 @@ pub mod video_service {
         chrono::{Utc, NaiveDateTime},
         serde::{Deserialize, Serialize},
     };
-
+    // custom short wrapper for Result
     type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+    // list all fields of struct
     #[macro_export]
     macro_rules! list_fields {
         (struct $name:ident { $($fname:ident : $ftype:ty),* }) => {
@@ -190,12 +191,7 @@ pub mod video_service {
         }
     }
     
-    // #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Default)]
-    // pub struct Video {
-    //     pub id: i32,
-    //     pub name: String,
-    //     pub createdat: Option<String>,
-    // }
+    // wrap to be able to list all fields
     list_fields!{
         struct Video {
             id: i32,
@@ -246,6 +242,7 @@ pub mod video_service {
             // Collect result
             let (_ /* conn */, video) = result.map_and_drop(|row| {
                 let (id, name, createdat) = mysql_async::from_row::<(i32, Vec<u8>, Option<NaiveDateTime>)>(row);
+                // convert to neccessary data types
                 Video {
                     id: id,
                     name: String::from_utf8_lossy(&name).into_owned(),

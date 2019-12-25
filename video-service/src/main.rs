@@ -92,7 +92,7 @@ async fn main() -> Result<()> {
                 tokio::spawn(async move {
                     // We're parsing each socket with the `BytesCodec`
                     let framed = BytesCodec::new().framed(socket);
-
+                    // handle request and errors
                     handle_request(framed, video_sender).await.unwrap();
 
                     // The connection will be closed at this point as `framed.next()` has returned `None`.
@@ -105,12 +105,14 @@ async fn main() -> Result<()> {
 
 // handle incomming request
 async fn handle_request(mut framed: FramedStream, video_sender: Sender<String>) -> Result<()> {
+    // get response details
     let request_details = get_request_details(&mut framed).await.unwrap_or(BytesMut::new());
     let request_line = std::str::from_utf8(&request_details)?;
 
     // split framed stream into read/write streams
     let (mut ws, rs) = framed.split();
 
+    // parse request command
     let mut request = Request::None;
     match Request::parse(&request_line) {
         Ok(req) => { request = req; },
@@ -133,7 +135,7 @@ async fn handle_request(mut framed: FramedStream, video_sender: Sender<String>) 
     Ok(())
 }
 
-// read filename from stream of bytes
+// read first bytes from stream of bytes
 async fn get_request_details(framed: &mut FramedStream) -> Result<BytesMut> {
     if let Some(result) = framed.next().await {
         match result {
@@ -148,7 +150,7 @@ async fn get_request_details(framed: &mut FramedStream) -> Result<BytesMut> {
     Err(format!("nothing comes from the stream").into())
 }
 
-// create a file from incomming bytes and handle errors
+// create a file from incomming bytes
 async fn upload_file(filename: &str, mut rs: ReadStream, mut ws: WriteStream, mut video_sender: Sender<String>) -> Result<()> {
     let filename = filename.to_owned();
     let filepath = format!("./tmp/{}", &filename);
@@ -160,9 +162,9 @@ async fn upload_file(filename: &str, mut rs: ReadStream, mut ws: WriteStream, mu
         send_cmd(&mut ws, Command::Err{msg: e}).await?;
         return Ok(());
     }
-
+    // all is OK
     send_cmd(&mut ws, Command::Ok).await?;
-
+    // create temp file
     let mut f = File::create(filepath).await?;
 
     // We loop while there are messages coming from the Stream `framed`.
@@ -192,14 +194,14 @@ async fn send_file(filename: &str, mut ws: WriteStream) -> Result<()> {
         send_cmd(&mut ws, Command::Err{msg: e}).await?;
         return Ok(());
     }
-
+    // all is OK
     send_cmd(&mut ws, Command::Ok).await?;
 
     let mut f = File::open(filepath).await?;
 
     const LEN: usize = 1572864; // 1.5 Mb  // 8388608; // 8 and something Mb
     let mut buf = vec![0u8; LEN];
-
+    // iterate over the file, pass bytes into buffer and then flush buffer to client
     loop {  
         // Read a buffer from the file.
         let n = f.read(&mut buf).await?;
@@ -230,6 +232,8 @@ async fn send_cmd(ws: &mut WriteStream, cmd: Command) -> Result<()>{
 }
 
 // reduce quality of incomming video file
+// it represents a queue of video files
+// queue will process only a single video file at time
 async fn video_processing_loop(videos: Receiver<String>) {
     let mut videos = videos.fuse();
     loop {

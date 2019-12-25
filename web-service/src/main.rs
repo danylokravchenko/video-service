@@ -12,6 +12,7 @@ mod api;
 
 #[actix_rt::main]
 async fn main() -> std::io::Result<()> {
+    // init logging
     std::env::set_var("RUST_LOG", "actix_web=info");
     env_logger::init();
 
@@ -35,12 +36,14 @@ async fn main() -> std::io::Result<()> {
     // create new service
     let video_service = web::Data::new(VideoService::new(pool));
 
+    // create new HTTPServer with dependency injections and custom wrappers
     HttpServer::new(move || {
 
+        // create template engine and register folder where to look for defined templates
         let tera =
         Tera::new(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/**/*")).unwrap();
 
-        // all errors from web server will be wrapped by this handlers
+        // all errors from web server will be wrapped by those handlers
         let error_handlers = middleware::errhandlers::ErrorHandlers::new()
             .handler(
                 http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -50,18 +53,20 @@ async fn main() -> std::io::Result<()> {
             .handler(http::StatusCode::NOT_FOUND, api::not_found);
 
         App::new()
+            // inject template engine
             .data(tera)
             .wrap(middleware::Logger::default())
             .wrap(error_handlers)
+            // group routes by `video` into a service
             .service(
                 web::scope("/video")
-                    // dependency injection of video client
+                    // dependency injection of video client and service
                     .app_data(video_client.clone())
                     .app_data(video_service.clone())
                     .route("/upload", web::post().to(api::save_file))
                     .route("/", web::get().to(api::list_videos))
                     .route("/show", web::get().to(api::show_video))
-                    .route("/file/{filename}", web::get().to(api::get_file)))
+                    .route("/file/{filename}", web::get().to(api::get_file)))        
             .service(
                 web::resource("/")
                     .route(web::get().to(api::index)),   
