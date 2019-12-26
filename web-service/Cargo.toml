@@ -24,3 +24,7 @@ mysql_async = "0.21.1"
 rand = "0.7.2"
 chrono = "0.4.10"
 serde = "1.0"
+
+[[bin]]
+name = "main"
+path = "src/main.rs"
