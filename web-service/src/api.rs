@@ -13,8 +13,8 @@ use {
     actix,
     rand::{thread_rng, Rng},
     rand::distributions::Standard,
-    web_service::video_service::{VideoService},
     serde::Deserialize,
+    crate::db,
 };
 
 // custom errors
@@ -45,7 +45,11 @@ pub async fn index(tmpl: web::Data<Tera>) -> Result<HttpResponse, Error> {
 }
 
 // upload video file in chunks to remote video service
-pub async fn save_file((mut payload, video_client, video_service): (Multipart, web::Data<VideoClient>, web::Data<VideoService>)) -> Result<HttpResponse, Error> {
+pub async fn save_file(
+    (mut payload, video_client, pool): 
+    (Multipart, web::Data<VideoClient>, web::Data<db::MysqlPool>)
+) -> Result<HttpResponse, Error> {
+    let mut files = Vec::new();
     // iterate over multipart stream
     while let Some(item) = payload.next().await {
         // establish connection to remote video service
@@ -72,9 +76,12 @@ pub async fn save_file((mut payload, video_client, video_service): (Multipart, w
         // flush buffer and send rest of bytes
         video_conn.flush().await.unwrap();
 
-        // insert new video to the database
-        video_service.insert_video(&filename).await.unwrap();
+        files.push(filename);
+        
     }
+    // insert uploaded videos to the database
+    web::block(move || db::insert_many_videos(files, &pool)).await?;
+    
     Ok(redirect_to("/"))
 }
 
@@ -84,13 +91,16 @@ pub struct Info {
 }
 
 // render videoplayer
-pub async fn show_video((tmpl, query, video_service): (web::Data<Tera>, web::Query<Info>, web::Data<VideoService>)) -> Result<HttpResponse, Error> {
+pub async fn show_video(
+    (tmpl, query, pool): 
+    (web::Data<Tera>, web::Query<Info>, web::Data<db::MysqlPool>)
+) -> Result<HttpResponse, Error> {
     // check if video exist
-    let video = match video_service.find_video(query.id).await {
-        None => {
+    let video = match web::block(move || db::get_video(query.id, &pool)).await {
+        Err(_) => {
             return Err(VideoError::NotFound{msg: format!("Video was not found")})?;
         },
-        Some(video) => video,
+        Ok(video) => video,
     };
     // pass data from populated video into template
     let mut ctx = tera::Context::new();
@@ -101,7 +111,11 @@ pub async fn show_video((tmpl, query, video_service): (web::Data<Tera>, web::Que
 }
 
 // get video file from remote video service
-pub async fn get_file((filename, video_client): (web::Path<String>, web::Data<VideoClient>)) -> Result<HttpResponse, Error> {
+pub async fn get_file(
+    (filename, video_client): 
+    (web::Path<String>, web::Data<VideoClient>)
+) -> Result<HttpResponse, Error> {
+
     let mut video_conn = video_client.conn()
             .await
             .expect("Can not connect to remote video-service");
@@ -122,8 +136,11 @@ pub async fn get_file((filename, video_client): (web::Path<String>, web::Data<Vi
 }
 
 // list all available videos
-pub async fn list_videos((tmpl, video_service): (web::Data<Tera>, web::Data<VideoService>)) -> Result<HttpResponse, Error> {
-    let videos = video_service.list_videos().await;
+pub async fn list_videos(
+    (tmpl, pool): 
+    (web::Data<Tera>, web::Data<db::MysqlPool>)
+) -> Result<HttpResponse, Error> {
+    let videos = web::block(move || db::get_all_videos(&pool)).await?;
     let mut ctx = tera::Context::new();
     ctx.insert("videos", &videos);
     let s = tmpl.render("list.html", &ctx)

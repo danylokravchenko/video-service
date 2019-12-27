@@ -31,3 +31,5 @@ FROM scratch
 COPY --from=cargo-build /build-out/main /
 
 CMD ["/main"]
+
+EXPOSE 8091
