@@ -9,6 +9,9 @@ ADD . ./
 # Fix permissions on source code.
 RUN sudo chown -R rust:rust /home/rust
 
+# Install mysql client lib for `diesel`
+RUN sudo apt-get update && sudo apt-get install -y libmysqlclient-dev
+
 # Build our application.
 RUN cargo build --release
 
@@ -17,7 +20,7 @@ FROM alpine:latest
 RUN apk --no-cache add ca-certificates
 COPY --from=builder \
     /home/rust/src/target/x86_64-unknown-linux-musl/release/main \
-    /usr/local/bin/
-CMD /usr/local/bin/main
+    /
+CMD ["/main"]
 
 EXPOSE 8090

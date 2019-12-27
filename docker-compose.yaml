@@ -1,0 +1,18 @@
+version: "3.7"
+
+services:
+    web:
+      build: ./web-service
+    #   volumes:
+    #     - cargo:/home/rust/.cargo
+    #     - target:/home/rust/src/target
+      ports:
+          - "8090:8090"
+
+    video:
+      build: ./video-service
+    #   volumes:
+    #     - cargo:/home/rust/.cargo
+    #     - target:/home/rust/src/target    
+      ports:
+          - "8091:8091"
